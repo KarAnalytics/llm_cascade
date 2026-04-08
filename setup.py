@@ -10,6 +10,7 @@ setup(
     install_requires=[
         'openai',
         'google-genai',
+        'sentence-transformers',
     ],
     python_requires='>=3.8',
 )

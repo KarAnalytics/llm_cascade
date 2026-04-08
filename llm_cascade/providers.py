@@ -140,6 +140,8 @@ class LLMCascade:
         self.verbose = verbose
         self.providers = providers or PROVIDERS
         self.available = [p for p in self.providers if _get_key(p['key_env'])]
+        self._embedder = None
+        self._embedder_name = None
 
         if verbose:
             if self.available:
@@ -196,56 +198,28 @@ class LLMCascade:
 
         raise RuntimeError(f'All providers exhausted. Last error: {last_exc}')
 
-    def get_embedding(self, text, model='text-embedding-3-small'):
+    def get_embedding(self, text, model_name='sentence-transformers/all-MiniLM-L6-v2'):
         """
-        Get an embedding vector using OpenAI-compatible API.
-        Tries providers that support embeddings (OpenAI, HuggingFace, etc.)
+        Get an embedding vector using a local HuggingFace model (no API key needed).
 
         Args:
             text: Text to embed
-            model: Embedding model name
+            model_name: HuggingFace model name (default: all-MiniLM-L6-v2)
 
         Returns:
             List of floats (the embedding vector)
         """
-        # Try OpenAI first (best embedding support)
-        for provider in self.available:
-            if provider['name'] in ('OpenAI', 'HuggingFace', 'Cohere'):
-                api_key = _get_key(provider['key_env'])
-                try:
-                    from openai import OpenAI
-                    client = OpenAI(api_key=api_key, base_url=provider.get('base_url', 'https://api.openai.com/v1'))
-                    if provider['name'] == 'HuggingFace':
-                        model = 'sentence-transformers/all-MiniLM-L6-v2'
-                    elif provider['name'] == 'Cohere':
-                        model = 'embed-english-v3.0'
-                    resp = client.embeddings.create(input=text, model=model)
-                    return resp.data[0].embedding
-                except Exception as exc:
-                    if _is_quota_error(exc):
-                        if self.verbose:
-                            print(f"  [{provider['name']}] embedding quota hit, trying next...")
-                        continue
-                    raise
+        if self._embedder is None or self._embedder_name != model_name:
+            from sentence_transformers import SentenceTransformer
+            if self.verbose:
+                print(f'  Loading embedding model: {model_name}...')
+            self._embedder = SentenceTransformer(model_name)
+            self._embedder_name = model_name
+            if self.verbose:
+                print(f'  Embedding model ready (local, no API key needed)')
 
-        # Fallback: use Gemini embeddings
-        for provider in self.available:
-            if provider['style'] == 'gemini':
-                api_key = _get_key(provider['key_env'])
-                try:
-                    from google import genai
-                    client = genai.Client(api_key=api_key)
-                    result = client.models.embed_content(
-                        model='models/text-embedding-004',
-                        contents=text,
-                    )
-                    return result.embeddings[0].values
-                except Exception as exc:
-                    if _is_quota_error(exc):
-                        continue
-                    raise
-
-        raise RuntimeError('No provider available for embeddings.')
+        embedding = self._embedder.encode(text)
+        return embedding.tolist()
 
     def _call_gemini(self, api_key, model, prompt, system_prompt=None):
         from google import genai
