@@ -115,13 +115,16 @@ def _get_key(env_name):
     return os.getenv(env_name) or _load_colab_secret(env_name)
 
 
-def _is_quota_error(exc):
-    """Check if an exception is a quota/rate-limit error."""
+def _is_retriable_error(exc):
+    """Check if an exception is a quota, rate-limit, or availability error worth retrying."""
     msg = str(exc).lower()
     return any(s in msg for s in (
         'quota', 'resource_exhausted', '429', 'rate limit',
         'exceeded your current quota', 'too many requests',
         'rate_limit_exceeded', 'tokens per minute',
+        '503', 'unavailable', 'overloaded', 'high demand',
+        '502', 'bad gateway', 'service unavailable',
+        '500', 'internal server error',
     ))
 
 
@@ -189,9 +192,9 @@ class LLMCascade:
                 return LLMResponse(text=text, provider=provider['name'], model=used_model)
             except Exception as exc:
                 last_exc = exc
-                if _is_quota_error(exc):
+                if _is_retriable_error(exc):
                     if self.verbose:
-                        print(f"  [{provider['name']}] quota/rate-limit hit, trying next...")
+                        print(f"  [{provider['name']}] unavailable, trying next...")
                     continue
                 else:
                     raise
