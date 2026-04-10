@@ -59,7 +59,7 @@ PROVIDERS = [
         'key_env': 'COHERE_API_KEY',
         'style': 'openai',
         'base_url': 'https://api.cohere.ai/compatibility/v1',
-        'default_model': 'command-r-plus',
+        'default_model': 'command-a-03-2025',
     },
     {
         'name': 'OpenRouter',
