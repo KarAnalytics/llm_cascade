@@ -116,7 +116,7 @@ def _get_key(env_name):
 
 
 def _is_retriable_error(exc):
-    """Check if an exception is a quota, rate-limit, or availability error worth retrying."""
+    """Check if an exception is worth retrying with the next provider."""
     msg = str(exc).lower()
     return any(s in msg for s in (
         'quota', 'resource_exhausted', '429', 'rate limit',
@@ -125,6 +125,9 @@ def _is_retriable_error(exc):
         '503', 'unavailable', 'overloaded', 'high demand',
         '502', 'bad gateway', 'service unavailable',
         '500', 'internal server error',
+        '401', 'invalid api key', 'expired_api_key', 'unauthorized',
+        '403', 'forbidden', 'permission denied',
+        'invalid_api_key', 'authentication',
     ))
 
 
