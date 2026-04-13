@@ -112,7 +112,14 @@ def _load_colab_secret(name):
 
 def _get_key(env_name):
     """Get an API key from env vars or Colab Secrets."""
-    return os.getenv(env_name) or _load_colab_secret(env_name)
+    # Some users store Gemini key as GOOGLE_API_KEY instead of GEMINI_API_KEY
+    aliases = {'GEMINI_API_KEY': ['GOOGLE_API_KEY']}
+    names_to_try = [env_name] + aliases.get(env_name, [])
+    for name in names_to_try:
+        val = os.getenv(name) or _load_colab_secret(name)
+        if val:
+            return val
+    return None
 
 
 def _is_retriable_error(exc):
