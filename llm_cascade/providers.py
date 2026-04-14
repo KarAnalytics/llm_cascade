@@ -185,7 +185,18 @@ class LLMCascade:
             LLMResponse with .text, .provider, .model attributes
         """
         if not self.available:
-            raise ValueError('No LLM provider configured. Set at least one API key.')
+            # Refresh in case keys were added after instantiation (common in Colab)
+            _load_env()
+            self.available = [p for p in self.providers if _get_key(p['key_env'])]
+            if not self.available:
+                raise ValueError(
+                    'No LLM provider configured. Set at least one API key in Colab Secrets '
+                    '(and toggle "Notebook access" ON), then re-run this cell.'
+                )
+            if self.verbose:
+                print('Providers refreshed:')
+                for p in self.available:
+                    print(f"  + {p['name']:<16} ({p['default_model']})")
 
         last_exc = None
         for provider in self.available:
