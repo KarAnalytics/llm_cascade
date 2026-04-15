@@ -247,10 +247,26 @@ class LLMCascade:
 
     def _call_gemini(self, api_key, model, prompt, system_prompt=None):
         from google import genai
+        from google.genai import types as genai_types
         client = genai.Client(api_key=api_key)
-        contents = prompt if not system_prompt else f'{system_prompt}\n\n{prompt}'
-        resp = client.models.generate_content(model=model, contents=contents)
-        return resp.text
+
+        # Disable thinking mode so all token budget goes to the actual answer.
+        # Without this, gemini-2.5-flash can burn the budget on internal
+        # reasoning and return an empty or truncated .text field.
+        config_kwargs = {
+            'thinking_config': genai_types.ThinkingConfig(thinking_budget=0),
+        }
+        if system_prompt:
+            config_kwargs['system_instruction'] = system_prompt
+
+        resp = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(**config_kwargs),
+        )
+        # resp.text can still be None if the model produced no text parts;
+        # fall back to empty string so downstream code doesn't crash.
+        return resp.text or ''
 
     def _call_openai(self, api_key, base_url, model, prompt, system_prompt=None, max_tokens=1024):
         from openai import OpenAI
