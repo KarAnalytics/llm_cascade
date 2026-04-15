@@ -286,14 +286,55 @@ class LLMCascade:
         """Return list of available provider names."""
         return [p['name'] for p in self.available]
 
+    def list_models(self):
+        """Return a dict of {provider_name: current_default_model} for all providers."""
+        return {p['name']: p['default_model'] for p in self.providers}
 
-def get_cascade(verbose=True):
+    def set_model(self, provider_name, model):
+        """
+        Override the default model for a specific provider.
+
+        Example:
+            llm = get_cascade()
+            llm.set_model('Gemini', 'gemini-2.5-pro')  # use Pro instead of Flash
+            llm.set_model('OpenAI', 'gpt-4o')          # use full gpt-4o
+            response = llm.generate('Summarize this')   # uses the new defaults
+        """
+        matched = False
+        for p in self.providers:
+            if p['name'].lower() == provider_name.lower():
+                p['default_model'] = model
+                matched = True
+                if self.verbose:
+                    print(f"  Set {p['name']} model -> {model}")
+        if not matched:
+            available_names = [p['name'] for p in self.providers]
+            raise ValueError(
+                f'Unknown provider: {provider_name}. Available: {available_names}'
+            )
+
+
+def get_cascade(verbose=True, models=None):
     """
     Create and return an LLMCascade instance.
 
-    This is the simplest way to get started:
+    Args:
+        verbose: Print provider status and per-call progress messages.
+        models: Optional dict of {provider_name: model} to override the defaults.
+                Example: get_cascade(models={'Gemini': 'gemini-2.5-pro', 'OpenAI': 'gpt-4o'})
+
+    The simplest way to get started:
         from llm_cascade import get_cascade
         llm = get_cascade()
         response = llm.generate("Hello!")
+
+    To use different models per application:
+        llm = get_cascade(models={'Gemini': 'gemini-2.5-pro'})
+        # or after creation:
+        llm.set_model('Gemini', 'gemini-2.5-pro')
     """
-    return LLMCascade(verbose=verbose)
+    cascade = LLMCascade(verbose=verbose)
+    if models:
+        for name, model in models.items():
+            cascade.set_model(name, model)
+    return cascade
