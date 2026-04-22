@@ -9,6 +9,10 @@ Usage:
     print(response.text)
     print(response.provider)     # which provider answered
     print(response.model)        # which model was used
+
+    # Multimodal (images, or video with Gemini):
+    response = llm.generate_multimodal(
+        "What product is this?", images=["photo.png"])
 """
 
 import os
@@ -25,13 +29,17 @@ class LLMResponse:
     model: str
 
 
-# Provider definitions in fallback order
+# Provider definitions in fallback order.
+# `multimodal_model` is optional: providers without it are skipped by
+# generate_multimodal(). Only Gemini handles video natively; the
+# OpenAI-compatible providers accept images only.
 PROVIDERS = [
     {
         'name': 'Gemini',
         'key_env': 'GEMINI_API_KEY',
         'style': 'gemini',
         'default_model': 'gemini-2.5-flash',
+        'multimodal_model': 'gemini-2.5-flash',  # handles images AND video
     },
     {
         'name': 'Ollama',
@@ -39,6 +47,7 @@ PROVIDERS = [
         'style': 'openai',
         'base_url': 'https://ollama.com/v1',
         'default_model': 'kimi-k2.5:cloud',
+        'multimodal_model': 'qwen2.5-vl:cloud',  # images only
     },
     {
         'name': 'Groq',
@@ -53,6 +62,7 @@ PROVIDERS = [
         'style': 'openai',
         'base_url': 'https://router.huggingface.co/v1',
         'default_model': 'meta-llama/Llama-3.3-70B-Instruct',
+        'multimodal_model': 'meta-llama/Llama-3.2-11B-Vision-Instruct',  # images only
     },
     {
         'name': 'Cohere',
@@ -67,6 +77,7 @@ PROVIDERS = [
         'style': 'openai',
         'base_url': 'https://openrouter.ai/api/v1',
         'default_model': 'meta-llama/llama-3.3-70b-instruct:free',
+        'multimodal_model': 'meta-llama/llama-3.2-11b-vision-instruct:free',  # images only
     },
         {
         'name': 'OpenAI',
@@ -120,6 +131,41 @@ def _get_key(env_name):
         if val:
             return val
     return None
+
+
+_MIME_BY_EXT = {
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'bmp': 'image/bmp',
+    'mp4': 'video/mp4',
+    'mov': 'video/quicktime',
+    'webm': 'video/webm',
+    'avi': 'video/x-msvideo',
+}
+
+
+def _encode_media(source):
+    """Normalize an image/video input to (bytes, mime_type).
+
+    Accepts bytes, a file path (str/Path), or a PIL.Image instance.
+    """
+    if isinstance(source, bytes):
+        return source, 'image/png'  # assume image if raw bytes with no hint
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        ext = path.suffix.lower().lstrip('.')
+        return path.read_bytes(), _MIME_BY_EXT.get(ext, 'application/octet-stream')
+    # PIL.Image duck-typing: has .save() and .format
+    if hasattr(source, 'save') and hasattr(source, 'format'):
+        import io
+        buf = io.BytesIO()
+        fmt = (source.format or 'PNG').upper()
+        source.save(buf, format=fmt)
+        return buf.getvalue(), f'image/{fmt.lower()}'
+    raise TypeError(f'Unsupported media source: {type(source).__name__}')
 
 
 def _is_retriable_error(exc):
@@ -221,6 +267,117 @@ class LLMCascade:
                     raise
 
         raise RuntimeError(f'All providers exhausted. Last error: {last_exc}')
+
+    def generate_multimodal(self, prompt, images, system_prompt=None,
+                            model=None, max_tokens=1024):
+        """
+        Generate text from a prompt + image(s) (or video file), with automatic
+        fallback across providers that have a configured multimodal model.
+
+        Args:
+            prompt: The user text prompt
+            images: A single item or list of items; each can be raw bytes,
+                    a file path (str/Path) to an image or video file, or a
+                    PIL.Image instance
+            system_prompt: Optional system prompt
+            model: Override the default multimodal model for the chosen provider
+            max_tokens: Maximum tokens to generate (OpenAI-compat providers only)
+
+        Returns:
+            LLMResponse with .text, .provider, .model attributes
+
+        Note: video inputs (mime video/*) are supported by Gemini only; other
+        providers accept images only and will be skipped automatically when
+        a video is present.
+        """
+        if not isinstance(images, (list, tuple)):
+            images = [images]
+
+        encoded = [_encode_media(m) for m in images]
+        has_video = any(mime.startswith('video/') for _, mime in encoded)
+
+        vision_providers = [p for p in self.available if p.get('multimodal_model')]
+        if has_video:
+            vision_providers = [p for p in vision_providers if p['style'] == 'gemini']
+
+        if not vision_providers:
+            configured = [p['name'] for p in self.providers if p.get('multimodal_model')]
+            raise RuntimeError(
+                'No multimodal-capable provider available. '
+                f'Configure an API key for one of: {configured}. '
+                + ('Video input requires Gemini.' if has_video else '')
+            )
+
+        last_exc = None
+        for provider in vision_providers:
+            api_key = _get_key(provider['key_env'])
+            used_model = model or provider['multimodal_model']
+            try:
+                if provider['style'] == 'gemini':
+                    text = self._call_gemini_multimodal(
+                        api_key, used_model, prompt, encoded, system_prompt)
+                else:
+                    text = self._call_openai_multimodal(
+                        api_key, provider['base_url'], used_model,
+                        prompt, encoded, system_prompt, max_tokens)
+                if self.verbose:
+                    print(f"  [Multimodal response from {provider['name']} / {used_model}]")
+                return LLMResponse(text=text, provider=provider['name'], model=used_model)
+            except Exception as exc:
+                last_exc = exc
+                if _is_retriable_error(exc):
+                    if self.verbose:
+                        print(f"  [{provider['name']}] unavailable, trying next...")
+                    continue
+                raise
+
+        raise RuntimeError(f'All multimodal providers exhausted. Last error: {last_exc}')
+
+    def _call_gemini_multimodal(self, api_key, model, prompt, encoded_media,
+                                system_prompt=None):
+        from google import genai
+        from google.genai import types as genai_types
+        client = genai.Client(api_key=api_key)
+
+        parts = [genai_types.Part.from_text(text=prompt)]
+        for data, mime in encoded_media:
+            parts.append(genai_types.Part.from_bytes(data=data, mime_type=mime))
+
+        config_kwargs = {}
+        if model.startswith('gemini-2.5-'):
+            config_kwargs['thinking_config'] = genai_types.ThinkingConfig(thinking_budget=0)
+        if system_prompt:
+            config_kwargs['system_instruction'] = system_prompt
+
+        resp = client.models.generate_content(
+            model=model,
+            contents=parts,
+            config=genai_types.GenerateContentConfig(**config_kwargs) if config_kwargs else None,
+        )
+        return resp.text or ''
+
+    def _call_openai_multimodal(self, api_key, base_url, model, prompt,
+                                encoded_media, system_prompt=None, max_tokens=1024):
+        import base64
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url)
+
+        content = [{'type': 'text', 'text': prompt}]
+        for data, mime in encoded_media:
+            b64 = base64.b64encode(data).decode('ascii')
+            content.append({
+                'type': 'image_url',
+                'image_url': {'url': f'data:{mime};base64,{b64}'},
+            })
+
+        messages = []
+        if system_prompt:
+            messages.append({'role': 'system', 'content': system_prompt})
+        messages.append({'role': 'user', 'content': content})
+
+        resp = client.chat.completions.create(
+            model=model, messages=messages, max_tokens=max_tokens)
+        return resp.choices[0].message.content
 
     def get_embedding(self, text, model_name='sentence-transformers/all-MiniLM-L6-v2'):
         """
