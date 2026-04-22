@@ -1,2 +1,15 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Enforce LF line endings for all text files, regardless of OS.
+# Prevents Windows editors / Git autocrlf from introducing CRLF, which
+# would produce noisy diffs.
+* text=auto eol=lf
+
+# Explicit binary declarations (belt-and-suspenders; text=auto usually
+# detects these, but being explicit removes any ambiguity).
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+*.zip  binary
+*.tar  binary
+*.gz   binary
